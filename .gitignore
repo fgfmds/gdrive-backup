@@ -1,0 +1,11 @@
+# Project-specific configs (contain local paths)
+config.toml
+configs/*.toml
+!config.template.toml
+
+# Logs
+logs/
+
+# OS
+.DS_Store
+Thumbs.db

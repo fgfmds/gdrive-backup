@@ -1,0 +1,39 @@
+# Google Drive Backup Configuration
+# Copy this file to config.toml and customize for your project.
+#
+# Usage:
+#   cp config.template.toml config.toml
+#   # Edit config.toml with your project settings
+#   ./backup.sh --config config.toml --dry-run
+
+[remote]
+# rclone remote name — must match what you created during setup
+name = "gdrive"
+
+# Destination folder on Google Drive (created automatically if it doesn't exist)
+folder = "backups/my-project"
+
+[source]
+# Absolute path to the project root directory
+path = "/path/to/your/project"
+
+[exclude]
+# File/directory patterns to skip during backup
+# Uses rclone filter syntax: https://rclone.org/filtering/
+patterns = [
+    ".git/**",
+    "__pycache__/**",
+    "*.pyc",
+    "*.pyo",
+    "*.tmp",
+    "*.temp",
+    "*.swp",
+    "*.swo",
+    "*~",
+    ".venv/**",
+    "venv/**",
+    "ENV/**",
+    ".DS_Store",
+    "Thumbs.db",
+    ".remote_secrets.toml",
+]
