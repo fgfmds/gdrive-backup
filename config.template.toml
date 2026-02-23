@@ -11,11 +11,21 @@
 name = "gdrive"
 
 # Destination folder on Google Drive (created automatically if it doesn't exist)
+# Files are stored under <folder>/current/ with version history in .changed/ and .deleted/
 folder = "backups/my-project"
 
 [source]
 # Absolute path to the project root directory
 path = "/path/to/your/project"
+
+[versions]
+# How many previous versions to keep for modified files
+# When a file is overwritten, the old version is saved to .changed/<timestamp>/
+keep_changed = 5
+
+# How many previous versions to keep for deleted files
+# When a file is deleted locally, the old version is saved to .deleted/<timestamp>/
+keep_deleted = 10
 
 [exclude]
 # File/directory patterns to skip during backup

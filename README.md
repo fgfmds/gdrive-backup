@@ -1,6 +1,30 @@
 # gdrive-backup
 
-Sync project directories to Google Drive using [rclone](https://rclone.org/). Designed to be reusable across multiple projects and machines.
+Sync project directories to Google Drive using [rclone](https://rclone.org/) with versioned archiving of changed and deleted files. Designed to be reusable across multiple projects and machines.
+
+## How It Works
+
+```
+local project/  ──sync──►  Google Drive:
+                             backups/my-project/
+                               current/           ← latest mirror of your project
+                               .changed/
+                                 2026-02-23_14-30/ ← old versions of modified files
+                                 2026-02-24_10-00/
+                               .deleted/
+                                 2026-02-23_14-30/ ← files removed from local
+                                 2026-02-24_10-00/
+```
+
+Each backup run:
+
+1. **Compares** local vs remote to classify every file (unchanged, changed, new, deleted)
+2. **Archives changed files** — copies the old version from `current/` to `.changed/<timestamp>/` (server-side, no download)
+3. **Archives deleted files** — copies the file from `current/` to `.deleted/<timestamp>/` (server-side, no download)
+4. **Syncs** — updates `current/` to match local (only uploads new/changed files)
+5. **Prunes** — removes old version directories beyond the configured retention limits
+
+Unchanged files are never re-uploaded or duplicated. Only modified and deleted files consume additional storage in the version archives.
 
 ## Quick Start
 
@@ -14,7 +38,7 @@ cd gdrive-backup
 
 # 3. Create a config for your project
 cp config.template.toml config.toml
-# Edit config.toml — set your project path and Drive folder
+# Edit config.toml — set your project path, Drive folder, and retention
 
 # 4. Preview what would be backed up
 ./backup.sh --dry-run
@@ -33,7 +57,8 @@ cp config.template.toml config.toml
 
 | File | Purpose |
 |------|---------|
-| `backup.sh` | Main backup script — syncs local project to Google Drive |
+| `backup.sh` | Entry point — checks dependencies, calls Python implementation |
+| `_backup_impl.py` | Core logic — classification, archiving, sync, pruning |
 | `setup.sh` | One-time setup — installs rclone and configures Drive auth |
 | `config.template.toml` | Template config — copy to `config.toml` per project |
 
@@ -68,10 +93,16 @@ cp config.template.toml config.toml
 # List top-level folders on Drive
 rclone lsd gdrive:
 
-# List files in your backup folder
-rclone ls gdrive:backups/my-project/
+# List files in your backup
+rclone ls gdrive:backups/my-project/current/
 
-# Check backup size
+# List archived versions of changed files
+rclone lsd gdrive:backups/my-project/.changed/
+
+# List archived versions of deleted files
+rclone lsd gdrive:backups/my-project/.deleted/
+
+# Check total backup size
 rclone size gdrive:backups/my-project/
 ```
 
@@ -85,6 +116,10 @@ folder = "backups/my-project"      # Drive folder (auto-created)
 [source]
 path = "/path/to/your/project"     # Absolute path to project root
 
+[versions]
+keep_changed = 5                   # Retain 5 most recent changed-file archives
+keep_deleted = 10                  # Retain 10 most recent deleted-file archives
+
 [exclude]
 patterns = [                       # Patterns to skip (rclone filter syntax)
     ".git/**",
@@ -96,12 +131,22 @@ patterns = [                       # Patterns to skip (rclone filter syntax)
 
 ### Config fields
 
-| Field | Required | Description |
-|-------|:--------:|-------------|
-| `remote.name` | Yes | Name of the rclone remote (created during `./setup.sh`) |
-| `remote.folder` | Yes | Destination folder on Google Drive. Created if it doesn't exist. |
-| `source.path` | Yes | Absolute path to the project directory to back up. |
-| `exclude.patterns` | No | List of rclone filter patterns. Files matching these are skipped. |
+| Field | Required | Default | Description |
+|-------|:--------:|:-------:|-------------|
+| `remote.name` | Yes | — | Name of the rclone remote (created during `./setup.sh`) |
+| `remote.folder` | Yes | — | Destination folder on Google Drive. Created if it doesn't exist. |
+| `source.path` | Yes | — | Absolute path to the project directory to back up. |
+| `versions.keep_changed` | No | 5 | Number of changed-file archive directories to retain. |
+| `versions.keep_deleted` | No | 10 | Number of deleted-file archive directories to retain. |
+| `exclude.patterns` | No | [] | List of rclone filter patterns. Files matching these are skipped. |
+
+### Version retention example
+
+With `keep_changed = 3` and `keep_deleted = 5`:
+
+- `.changed/` keeps the 3 most recent timestamp directories. Older ones are automatically deleted.
+- `.deleted/` keeps the 5 most recent timestamp directories. Older ones are automatically deleted.
+- Empty archive runs (no changed/deleted files) do not create empty directories.
 
 ### Exclude pattern syntax
 
@@ -116,7 +161,7 @@ Uses [rclone filtering rules](https://rclone.org/filtering/):
 
 ## Multi-Project Setup
 
-You can back up multiple projects from the same machine. Create a config file per project:
+Back up multiple projects from the same machine with separate config files:
 
 ```bash
 # Option A: Named configs in the repo directory
@@ -177,17 +222,10 @@ rclone listremotes
 rclone defaults are conservative. For faster transfers on good connections:
 
 ```bash
-# Add to the rclone command in backup.sh if needed:
---transfers 8        # Parallel file transfers (default: 4)
+# Add to the rclone command in _backup_impl.py if needed:
+--transfers 8           # Parallel file transfers (default: 4)
 --drive-chunk-size 64M  # Larger upload chunks (default: 8M)
 ```
-
-## How It Works
-
-- Uses `rclone sync` which mirrors the source to the destination
-- Only changed files are uploaded (rclone checks size and modification time)
-- Deleted local files are also deleted on Drive (it's a true sync)
-- First backup uploads everything; subsequent runs are incremental
 
 ## License
 
