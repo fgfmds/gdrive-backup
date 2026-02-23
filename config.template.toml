@@ -1,34 +1,27 @@
 # Google Drive Backup Configuration
-# Copy this file to config.toml and customize for your project.
+# Copy this file to config.toml and customize for your setup.
 #
 # Usage:
 #   cp config.template.toml config.toml
-#   # Edit config.toml with your project settings
-#   ./backup.sh --config config.toml --dry-run
+#   # Edit config.toml with your directories
+#   ./backup.sh --dry-run
 
 [remote]
 # rclone remote name — must match what you created during setup
 name = "gdrive"
 
-# Destination folder on Google Drive (created automatically if it doesn't exist)
-# Files are stored under <folder>/current/ with version history in .changed/ and .deleted/
-folder = "backups/my-project"
-
-[source]
-# Absolute path to the project root directory
-path = "/path/to/your/project"
+# Root folder on Google Drive where all backups are stored
+root = "backups"
 
 [versions]
 # How many previous versions to keep for modified files
-# When a file is overwritten, the old version is saved to .changed/<timestamp>/
 keep_changed = 5
 
 # How many previous versions to keep for deleted files
-# When a file is deleted locally, the old version is saved to .deleted/<timestamp>/
 keep_deleted = 10
 
 [exclude]
-# File/directory patterns to skip during backup
+# Global exclude patterns — applied to ALL sources
 # Uses rclone filter syntax: https://rclone.org/filtering/
 patterns = [
     ".git/**",
@@ -47,3 +40,24 @@ patterns = [
     "Thumbs.db",
     ".remote_secrets.toml",
 ]
+
+# ── Sources ──────────────────────────────────────────────────────────
+# Each [[sources]] entry defines a directory tree to back up.
+# Add as many as you need.
+
+[[sources]]
+# Local path to back up (absolute)
+path = "/path/to/your/projects"
+
+# Subfolder under remote.root on Google Drive
+# e.g., with root = "backups" and folder = "my-projects",
+# files go to: gdrive:backups/my-projects/current/
+folder = "my-projects"
+
+# Optional: additional exclude patterns for this source only
+# exclude = ["large-dataset/**", "*.bin"]
+
+# ── Add more sources by repeating [[sources]] ────────────────────────
+# [[sources]]
+# path = "/path/to/training-data"
+# folder = "training-data"

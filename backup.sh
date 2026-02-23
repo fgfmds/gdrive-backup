@@ -1,7 +1,7 @@
 #!/bin/bash
-# backup.sh — Sync a project directory to Google Drive via rclone
+# backup.sh — Sync directory trees to Google Drive via rclone
 #              with versioned archiving of changed and deleted files
-# Usage: ./backup.sh [--config <path>] [--dry-run] [--restore]
+# Usage: ./backup.sh [--config <path>] [--dry-run] [--restore] [--source <name>]
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

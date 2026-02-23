@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """
 Google Drive backup with versioned archiving of changed and deleted files.
+Supports multiple source directories in a single config.
 
-Architecture:
-  local project/  ──sync──►  remote:folder/current/
-                                ├── .changed/<timestamp>/   (old versions of modified files)
-                                └── .deleted/<timestamp>/   (files removed from local)
+Architecture (per source):
+  local dir/  ──sync──►  remote:root/folder/current/
+                            ├── .changed/<timestamp>/   (old versions of modified files)
+                            └── .deleted/<timestamp>/   (files removed from local)
 
-Steps per backup run:
+Steps per source per backup run:
   1. rclone check: classify every file as unchanged / changed / new / deleted
   2. Server-side copy changed files from current/ to .changed/<timestamp>/
   3. Server-side copy deleted files from current/ to .deleted/<timestamp>/
@@ -21,12 +22,11 @@ import subprocess
 import sys
 import tomllib
 from datetime import datetime
-from pathlib import Path
 
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Sync a project directory to Google Drive with version history"
+        description="Sync directory trees to Google Drive with version history"
     )
     p.add_argument(
         "--config", default="./config.toml",
@@ -39,6 +39,10 @@ def parse_args():
     p.add_argument(
         "--restore", action="store_true",
         help="Download from Drive to local (reverse direction)"
+    )
+    p.add_argument(
+        "--source", default=None,
+        help="Only process the source with this folder name (skip others)"
     )
     return p.parse_args()
 
@@ -60,28 +64,19 @@ def run_rclone(args, capture=False, check=True):
             capture_output=True, text=True
         )
         if check and result.returncode != 0:
-            print(f"rclone error (exit {result.returncode}):", file=sys.stderr)
-            print(result.stderr, file=sys.stderr)
+            print(f"  rclone error (exit {result.returncode}):", file=sys.stderr)
+            if result.stderr:
+                print(f"  {result.stderr.strip()}", file=sys.stderr)
         return result
     else:
         return subprocess.run(["rclone"] + args)
 
 
-def validate(cfg):
-    """Validate config and rclone remote. Returns (remote_name, remote_folder, source_path, excludes, versions)."""
+def validate_remote(cfg):
+    """Validate rclone remote exists. Returns (remote_name, remote_root)."""
     remote_name = cfg["remote"]["name"]
-    remote_folder = cfg["remote"]["folder"]
-    source_path = cfg["source"]["path"]
-    excludes = cfg.get("exclude", {}).get("patterns", [])
-    versions = cfg.get("versions", {})
-    keep_changed = versions.get("keep_changed", 5)
-    keep_deleted = versions.get("keep_deleted", 10)
+    remote_root = cfg["remote"]["root"]
 
-    if not os.path.isdir(source_path):
-        print(f"Error: Source path does not exist: {source_path}", file=sys.stderr)
-        sys.exit(1)
-
-    # Check remote exists
     result = run_rclone(["listremotes"], capture=True, check=False)
     remotes = result.stdout.strip().split("\n") if result.stdout.strip() else []
     if f"{remote_name}:" not in remotes:
@@ -89,22 +84,24 @@ def validate(cfg):
         print("Run: rclone config  (or ./setup.sh)", file=sys.stderr)
         sys.exit(1)
 
-    return remote_name, remote_folder, source_path, excludes, keep_changed, keep_deleted
+    return remote_name, remote_root
 
 
-def build_exclude_args(excludes):
-    """Build rclone --exclude flags from pattern list."""
+def build_exclude_args(global_excludes, source_excludes=None):
+    """Build rclone --exclude flags from global + per-source pattern lists."""
     args = []
-    for pattern in excludes:
+    for pattern in global_excludes:
         args.extend(["--exclude", pattern])
+    if source_excludes:
+        for pattern in source_excludes:
+            args.extend(["--exclude", pattern])
     return args
 
 
-def classify_files(source_path, remote_current, excludes):
+def classify_files(source_path, remote_current, exclude_args):
     """
     Use rclone check --combined to classify files.
 
-    Returns (changed, deleted, new_files) where each is a list of relative paths.
     Combined output format:
       = path   — match (unchanged)
       * path   — size/hash differs (changed)
@@ -115,7 +112,7 @@ def classify_files(source_path, remote_current, excludes):
     args = [
         "check", source_path, remote_current,
         "--combined", "-",
-    ] + build_exclude_args(excludes)
+    ] + exclude_args
 
     result = run_rclone(args, capture=True, check=False)
 
@@ -142,7 +139,7 @@ def classify_files(source_path, remote_current, excludes):
     return changed, deleted, new_files, errors
 
 
-def archive_files(remote_name, remote_folder, files, archive_subdir, timestamp, dry_run):
+def archive_files(remote_name, remote_base, files, archive_subdir, timestamp, dry_run):
     """
     Server-side copy files from current/ to an archive directory.
     Uses rclone copyto for each file (server-side, no data downloaded).
@@ -150,8 +147,8 @@ def archive_files(remote_name, remote_folder, files, archive_subdir, timestamp, 
     if not files:
         return
 
-    src_base = f"{remote_name}:{remote_folder}/current"
-    dst_base = f"{remote_name}:{remote_folder}/{archive_subdir}/{timestamp}"
+    src_base = f"{remote_name}:{remote_base}/current"
+    dst_base = f"{remote_name}:{remote_base}/{archive_subdir}/{timestamp}"
 
     print(f"  Archiving {len(files)} file(s) to {archive_subdir}/{timestamp}/")
 
@@ -166,11 +163,10 @@ def archive_files(remote_name, remote_folder, files, archive_subdir, timestamp, 
                 print(f"    Warning: failed to archive {filepath}: {result.stderr.strip()}")
 
 
-def prune_versions(remote_name, remote_folder, archive_subdir, keep_n, dry_run):
+def prune_versions(remote_name, remote_base, archive_subdir, keep_n, dry_run):
     """Remove oldest version directories beyond keep_n."""
-    remote_path = f"{remote_name}:{remote_folder}/{archive_subdir}"
+    remote_path = f"{remote_name}:{remote_base}/{archive_subdir}"
 
-    # List version directories (timestamps sort lexicographically)
     result = run_rclone(["lsf", remote_path, "--dirs-only"], capture=True, check=False)
 
     if result.returncode != 0 or not result.stdout.strip():
@@ -194,62 +190,45 @@ def prune_versions(remote_name, remote_folder, archive_subdir, keep_n, dry_run):
             print(f"    Removed: {archive_subdir}/{v}/")
 
 
-def do_backup(cfg, dry_run):
-    remote_name, remote_folder, source_path, excludes, keep_changed, keep_deleted = validate(cfg)
+def backup_source(remote_name, remote_base, source_path, exclude_args,
+                  keep_changed, keep_deleted, timestamp, log_dir, dry_run):
+    """Back up a single source directory with versioning."""
+    remote_current = f"{remote_name}:{remote_base}/current"
 
-    remote_current = f"{remote_name}:{remote_folder}/current"
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    exclude_args = build_exclude_args(excludes)
-
-    # Set up logging
-    log_dir = os.path.join(source_path, "logs")
-    os.makedirs(log_dir, exist_ok=True)
     logfile = os.path.join(log_dir, f"{timestamp}_gdrive_backup.log")
 
-    print("=== Google Drive BACKUP ===")
-    print(f"Started:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Source:        {source_path}")
-    print(f"Destination:   {remote_current}")
-    print(f"Log:           {logfile}")
-    print(f"Keep changed:  {keep_changed} versions")
-    print(f"Keep deleted:  {keep_deleted} versions")
-    if dry_run:
-        print("Mode:          DRY RUN (no files will be transferred)")
+    print(f"  Source:        {source_path}")
+    print(f"  Destination:   {remote_current}")
+    print(f"  Log:           {logfile}")
     print()
 
-    # ── Step 1: Classify files ───────────────────────────────────────
-    print("--- Step 1: Comparing local vs remote ---")
+    # Step 1: Classify
+    print("  [1/5] Comparing local vs remote...")
     changed, deleted, new_files, errors = classify_files(
-        source_path, remote_current, excludes
+        source_path, remote_current, exclude_args
     )
-    print(f"  Unchanged:   (not counted)")
-    print(f"  Changed:     {len(changed)}")
-    print(f"  New:         {len(new_files)}")
-    print(f"  Deleted:     {len(deleted)}")
-    if errors:
-        print(f"  Errors:      {len(errors)}")
+    print(f"         Changed: {len(changed)}  New: {len(new_files)}  "
+          f"Deleted: {len(deleted)}  Errors: {len(errors)}")
     print()
 
-    # ── Step 2: Archive changed files ────────────────────────────────
+    # Step 2: Archive changed
     if changed:
-        print("--- Step 2: Archiving changed files ---")
-        archive_files(remote_name, remote_folder, changed, ".changed", timestamp, dry_run)
-        print()
+        print("  [2/5] Archiving changed files...")
+        archive_files(remote_name, remote_base, changed, ".changed", timestamp, dry_run)
     else:
-        print("--- Step 2: No changed files to archive ---")
-        print()
+        print("  [2/5] No changed files to archive")
+    print()
 
-    # ── Step 3: Archive deleted files ────────────────────────────────
+    # Step 3: Archive deleted
     if deleted:
-        print("--- Step 3: Archiving deleted files ---")
-        archive_files(remote_name, remote_folder, deleted, ".deleted", timestamp, dry_run)
-        print()
+        print("  [3/5] Archiving deleted files...")
+        archive_files(remote_name, remote_base, deleted, ".deleted", timestamp, dry_run)
     else:
-        print("--- Step 3: No deleted files to archive ---")
-        print()
+        print("  [3/5] No deleted files to archive")
+    print()
 
-    # ── Step 4: Sync ─────────────────────────────────────────────────
-    print("--- Step 4: Syncing to remote ---")
+    # Step 4: Sync
+    print("  [4/5] Syncing to remote...")
     sync_args = [
         "sync", source_path, remote_current,
         "--progress", "--stats-one-line", "--stats", "10s",
@@ -262,51 +241,34 @@ def do_backup(cfg, dry_run):
     sync_exit = result.returncode
     print()
 
-    # ── Step 5: Prune old versions ───────────────────────────────────
-    print("--- Step 5: Pruning old versions ---")
-    prune_versions(remote_name, remote_folder, ".changed", keep_changed, dry_run)
-    prune_versions(remote_name, remote_folder, ".deleted", keep_deleted, dry_run)
+    # Step 5: Prune
+    print("  [5/5] Pruning old versions...")
+    prune_versions(remote_name, remote_base, ".changed", keep_changed, dry_run)
+    prune_versions(remote_name, remote_base, ".deleted", keep_deleted, dry_run)
     print()
 
-    # ── Summary ──────────────────────────────────────────────────────
-    if sync_exit == 0:
-        print("=== BACKUP COMPLETE ===")
-    else:
-        print(f"=== BACKUP FAILED (exit code: {sync_exit}) ===")
-
-    print(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Log:      {logfile}")
-
-    # Show transfer summary from log
+    # Summary from log
     if os.path.isfile(logfile):
-        print()
-        print("--- Transfer Summary ---")
+        print("  --- Transfer Summary ---")
         with open(logfile) as f:
             for line in f:
                 if any(kw in line for kw in ("Transferred", "Checks", "Elapsed", "Errors")):
-                    print(f"  {line.rstrip()}")
+                    print(f"    {line.rstrip()}")
+        print()
 
     return sync_exit
 
 
-def do_restore(cfg, dry_run):
-    remote_name, remote_folder, source_path, excludes, _, _ = validate(cfg)
+def restore_source(remote_name, remote_base, source_path, exclude_args,
+                   timestamp, log_dir, dry_run):
+    """Restore a single source directory from Drive."""
+    remote_current = f"{remote_name}:{remote_base}/current"
 
-    remote_current = f"{remote_name}:{remote_folder}/current"
-    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    exclude_args = build_exclude_args(excludes)
-
-    log_dir = os.path.join(source_path, "logs")
-    os.makedirs(log_dir, exist_ok=True)
     logfile = os.path.join(log_dir, f"{timestamp}_gdrive_restore.log")
 
-    print("=== Google Drive RESTORE ===")
-    print(f"Started:  {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Source:   {remote_current}")
-    print(f"Dest:     {source_path}")
-    print(f"Log:      {logfile}")
-    if dry_run:
-        print("Mode:     DRY RUN (no files will be transferred)")
+    print(f"  Source:   {remote_current}")
+    print(f"  Dest:     {source_path}")
+    print(f"  Log:      {logfile}")
     print()
 
     sync_args = [
@@ -318,14 +280,7 @@ def do_restore(cfg, dry_run):
         sync_args.append("--dry-run")
 
     result = run_rclone(sync_args, capture=False, check=False)
-
-    if result.returncode == 0:
-        print("\n=== RESTORE COMPLETE ===")
-    else:
-        print(f"\n=== RESTORE FAILED (exit code: {result.returncode}) ===")
-
-    print(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    print(f"Log:      {logfile}")
+    print()
 
     return result.returncode
 
@@ -334,12 +289,89 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    if args.restore:
-        exit_code = do_restore(cfg, args.dry_run)
-    else:
-        exit_code = do_backup(cfg, args.dry_run)
+    remote_name, remote_root = validate_remote(cfg)
+    global_excludes = cfg.get("exclude", {}).get("patterns", [])
+    versions = cfg.get("versions", {})
+    keep_changed = versions.get("keep_changed", 5)
+    keep_deleted = versions.get("keep_deleted", 10)
+    sources = cfg.get("sources", [])
 
-    sys.exit(exit_code)
+    if not sources:
+        print("Error: No [[sources]] defined in config.", file=sys.stderr)
+        sys.exit(1)
+
+    # Filter to a single source if --source specified
+    if args.source:
+        sources = [s for s in sources if s["folder"] == args.source]
+        if not sources:
+            print(f"Error: No source with folder '{args.source}' found in config.", file=sys.stderr)
+            sys.exit(1)
+
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    mode = "RESTORE" if args.restore else "BACKUP"
+
+    print(f"=== Google Drive {mode} ===")
+    print(f"Started:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    print(f"Remote:        {remote_name}:{remote_root}/")
+    print(f"Sources:       {len(sources)}")
+    print(f"Keep changed:  {keep_changed} versions")
+    print(f"Keep deleted:  {keep_deleted} versions")
+    if args.dry_run:
+        print("Mode:          DRY RUN (no files will be transferred)")
+    print()
+
+    overall_exit = 0
+
+    for i, source in enumerate(sources, 1):
+        source_path = source["path"]
+        folder = source["folder"]
+        source_excludes = source.get("exclude", [])
+
+        if not os.path.isdir(source_path):
+            print(f"[{i}/{len(sources)}] SKIPPED — path not found: {source_path}")
+            print()
+            overall_exit = 1
+            continue
+
+        remote_base = f"{remote_root}/{folder}"
+        exclude_args = build_exclude_args(global_excludes, source_excludes)
+
+        # Log directory lives inside the source being backed up
+        log_dir = os.path.join(source_path, "logs")
+        os.makedirs(log_dir, exist_ok=True)
+
+        print(f"{'─' * 60}")
+        print(f"[{i}/{len(sources)}] {folder}")
+        print(f"{'─' * 60}")
+
+        if args.restore:
+            exit_code = restore_source(
+                remote_name, remote_base, source_path, exclude_args,
+                timestamp, log_dir, args.dry_run
+            )
+        else:
+            exit_code = backup_source(
+                remote_name, remote_base, source_path, exclude_args,
+                keep_changed, keep_deleted, timestamp, log_dir, args.dry_run
+            )
+
+        if exit_code == 0:
+            print(f"[{i}/{len(sources)}] {folder} — OK")
+        else:
+            print(f"[{i}/{len(sources)}] {folder} — FAILED (exit code: {exit_code})")
+            overall_exit = exit_code
+
+        print()
+
+    # Final summary
+    print("=" * 60)
+    if overall_exit == 0:
+        print(f"=== {mode} COMPLETE ===")
+    else:
+        print(f"=== {mode} FINISHED WITH ERRORS ===")
+    print(f"Finished: {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
+
+    sys.exit(overall_exit)
 
 
 if __name__ == "__main__":
