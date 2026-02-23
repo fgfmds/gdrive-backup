@@ -140,6 +140,9 @@ root = "backups"          # Root folder on Google Drive
 keep_changed = 5          # Retain 5 most recent changed-file archives
 keep_deleted = 10         # Retain 10 most recent deleted-file archives
 
+[schedule]
+cron = "0 2 * * *"        # Cron expression for --cron-install (default)
+
 [exclude]
 patterns = [              # Global excludes — applied to ALL sources
     ".git/**",
@@ -166,6 +169,7 @@ folder = "training-data"
 | `remote.root` | Yes | — | Root folder on Google Drive for all backups |
 | `versions.keep_changed` | No | 5 | Number of changed-file archive directories to retain |
 | `versions.keep_deleted` | No | 10 | Number of deleted-file archive directories to retain |
+| `schedule.cron` | No | `0 2 * * *` | Cron expression used by `--cron-install` |
 | `exclude.patterns` | No | [] | Global exclude patterns applied to all sources |
 | `sources[].path` | Yes | — | Absolute path to directory tree to back up |
 | `sources[].folder` | Yes | — | Subfolder name under `remote.root` on Drive |
@@ -199,12 +203,70 @@ Each backup run creates a timestamped log file in each source's `logs/` director
 /path/to/training-data/logs/2026-02-23_14-30-00_gdrive_backup.log
 ```
 
+## Automation
+
+Schedule backups to run automatically via cron. Works on Linux (native and WSL2) and macOS.
+
+### Set up automated backups
+
+```bash
+# Install cron job (uses schedule from config.toml)
+./backup.sh --cron-install
+
+# Check status — last backup time and cron schedule
+./backup.sh --status
+
+# Remove the cron job
+./backup.sh --cron-remove
+```
+
+### Configure the schedule
+
+Add a `[schedule]` section to `config.toml`:
+
+```toml
+[schedule]
+cron = "0 2 * * *"    # Daily at 2:00 AM (default)
+```
+
+Common schedules:
+
+| Schedule | Cron Expression |
+|----------|----------------|
+| Daily at 2 AM | `0 2 * * *` |
+| Every 6 hours | `0 */6 * * *` |
+| Weekdays at midnight | `0 0 * * 1-5` |
+| Every Sunday at 3 AM | `0 3 * * 0` |
+
+### How it works
+
+- `--cron-install` adds an entry to your user's crontab (no sudo required)
+- The cron job runs `backup.sh` with the absolute path to your `config.toml`
+- Output is appended to `logs/cron_backup.log` in the gdrive-backup directory
+- Each config file gets its own cron entry — multiple configs can coexist
+- Re-running `--cron-install` replaces the existing entry (no duplicates)
+
+### Verify cron is running
+
+```bash
+# Check that cron service is active
+# Linux/WSL2:
+service cron status
+
+# macOS:
+launchctl list | grep cron
+
+# View your crontab
+crontab -l
+```
+
 ## Deploying to Another Machine
 
 1. Clone the repo: `git clone https://github.com/fgfmds/gdrive-backup.git`
 2. Run setup: `./setup.sh` (installs rclone, authenticates with Google Drive)
 3. Create config: `cp config.template.toml config.toml` and edit with local paths
 4. Test: `./backup.sh --dry-run`
+5. Automate: `./backup.sh --cron-install`
 
 Each machine has its own `config.toml` with its local paths. The `config.toml` file is gitignored so it won't conflict across machines.
 

@@ -41,6 +41,12 @@ patterns = [
     ".remote_secrets.toml",
 ]
 
+[schedule]
+# Cron expression for automated backups (used by --cron-install)
+# Default: daily at 2:00 AM
+# Format: minute hour day-of-month month day-of-week
+cron = "0 2 * * *"
+
 # ── Sources ──────────────────────────────────────────────────────────
 # Each [[sources]] entry defines a directory tree to back up.
 # Add as many as you need.

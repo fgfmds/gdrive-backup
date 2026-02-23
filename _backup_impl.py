@@ -17,11 +17,13 @@ Steps per source per backup run:
 """
 
 import argparse
+import glob
 import os
 import subprocess
 import sys
 import tomllib
 from datetime import datetime
+from pathlib import Path
 
 
 def parse_args():
@@ -43,6 +45,18 @@ def parse_args():
     p.add_argument(
         "--source", default=None,
         help="Only process the source with this folder name (skip others)"
+    )
+    p.add_argument(
+        "--cron-install", action="store_true",
+        help="Install a cron job for automated backups"
+    )
+    p.add_argument(
+        "--cron-remove", action="store_true",
+        help="Remove the automated backup cron job"
+    )
+    p.add_argument(
+        "--status", action="store_true",
+        help="Show last backup time and cron schedule"
     )
     return p.parse_args()
 
@@ -190,6 +204,161 @@ def prune_versions(remote_name, remote_base, archive_subdir, keep_n, dry_run):
             print(f"    Removed: {archive_subdir}/{v}/")
 
 
+CRON_MARKER = "# gdrive-backup:"
+
+
+def get_cron_marker(config_path):
+    """Return a unique cron comment marker for this config file."""
+    return f"{CRON_MARKER} {os.path.abspath(config_path)}"
+
+
+def do_cron_install(config_path, cfg):
+    """Install a cron job that runs backup.sh on the configured schedule."""
+    schedule = cfg.get("schedule", {}).get("cron", "0 2 * * *")
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    backup_sh = os.path.join(script_dir, "backup.sh")
+    abs_config = os.path.abspath(config_path)
+    marker = get_cron_marker(config_path)
+
+    # Build the cron line
+    log_dir = os.path.join(script_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, "cron_backup.log")
+
+    cron_line = (
+        f'{schedule} "{backup_sh}" --config "{abs_config}" '
+        f'>> "{log_file}" 2>&1 {marker}'
+    )
+
+    # Read existing crontab
+    result = subprocess.run(
+        ["crontab", "-l"], capture_output=True, text=True
+    )
+    existing = result.stdout if result.returncode == 0 else ""
+
+    # Remove any existing entry for this config
+    lines = [l for l in existing.splitlines() if marker not in l]
+
+    # Add new entry
+    lines.append(cron_line)
+    new_crontab = "\n".join(lines) + "\n"
+
+    # Install
+    proc = subprocess.run(
+        ["crontab", "-"], input=new_crontab, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        print(f"Error installing cron job: {proc.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Cron job installed:")
+    print(f"  Schedule:  {schedule}")
+    print(f"  Command:   {backup_sh} --config {abs_config}")
+    print(f"  Log:       {log_file}")
+    print()
+    print("Verify with: crontab -l")
+
+
+def do_cron_remove(config_path):
+    """Remove the cron job for this config file."""
+    marker = get_cron_marker(config_path)
+
+    result = subprocess.run(
+        ["crontab", "-l"], capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        print("No crontab found.")
+        return
+
+    existing = result.stdout
+    lines = existing.splitlines()
+    new_lines = [l for l in lines if marker not in l]
+
+    if len(new_lines) == len(lines):
+        print("No cron job found for this config.")
+        return
+
+    new_crontab = "\n".join(new_lines) + "\n" if new_lines else ""
+
+    proc = subprocess.run(
+        ["crontab", "-"], input=new_crontab, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        print(f"Error removing cron job: {proc.stderr.strip()}", file=sys.stderr)
+        sys.exit(1)
+
+    print("Cron job removed.")
+    print("Verify with: crontab -l")
+
+
+def do_status(config_path, cfg):
+    """Show last backup time and cron schedule."""
+    sources = cfg.get("sources", [])
+
+    # Find most recent log across all sources
+    print("=== Backup Status ===")
+    print()
+
+    for source in sources:
+        source_path = source["path"]
+        folder = source["folder"]
+        log_dir = os.path.join(source_path, "logs")
+
+        print(f"  {folder}:")
+
+        if not os.path.isdir(log_dir):
+            print(f"    Last backup: never (no logs/ directory)")
+            print()
+            continue
+
+        log_files = sorted(glob.glob(os.path.join(log_dir, "*_gdrive_backup.log")))
+        if not log_files:
+            print(f"    Last backup: never (no log files)")
+        else:
+            latest = log_files[-1]
+            basename = os.path.basename(latest)
+            # Parse timestamp from filename: YYYY-MM-DD_HH-MM-SS_gdrive_backup.log
+            ts_str = basename.replace("_gdrive_backup.log", "")
+            try:
+                ts = datetime.strptime(ts_str, "%Y-%m-%d_%H-%M-%S")
+                print(f"    Last backup: {ts.strftime('%Y-%m-%d %H:%M:%S')}")
+            except ValueError:
+                print(f"    Last backup: {basename} (could not parse timestamp)")
+
+            # Check if last backup had errors
+            with open(latest) as f:
+                content = f.read()
+            if "ERROR" in content:
+                print(f"    Status:      errors in last run (check {latest})")
+            else:
+                print(f"    Status:      OK")
+
+        print()
+
+    # Show cron schedule
+    marker = get_cron_marker(config_path)
+    result = subprocess.run(
+        ["crontab", "-l"], capture_output=True, text=True
+    )
+
+    print("  Cron schedule:")
+    if result.returncode != 0:
+        print("    No crontab found")
+    else:
+        found = False
+        for line in result.stdout.splitlines():
+            if marker in line:
+                # Extract schedule (first 5 fields)
+                parts = line.split()
+                schedule = " ".join(parts[:5])
+                print(f"    {schedule}")
+                found = True
+        if not found:
+            print("    Not scheduled (run --cron-install to set up)")
+
+    print()
+
+
 def backup_source(remote_name, remote_base, source_path, exclude_args,
                   keep_changed, keep_deleted, timestamp, log_dir, dry_run):
     """Back up a single source directory with versioning."""
@@ -288,6 +457,17 @@ def restore_source(remote_name, remote_base, source_path, exclude_args,
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+
+    # Handle cron and status commands (don't need remote validation)
+    if args.cron_install:
+        do_cron_install(args.config, cfg)
+        return
+    if args.cron_remove:
+        do_cron_remove(args.config)
+        return
+    if args.status:
+        do_status(args.config, cfg)
+        return
 
     remote_name, remote_root = validate_remote(cfg)
     global_excludes = cfg.get("exclude", {}).get("patterns", [])
