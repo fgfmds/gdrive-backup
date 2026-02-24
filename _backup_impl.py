@@ -490,9 +490,14 @@ def main():
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     mode = "RESTORE" if args.restore else "BACKUP"
 
+    # Detect if remote is a crypt (encrypted) remote
+    crypt_check = run_rclone(["config", "show", remote_name], capture=True, check=False)
+    encrypted = any("type" in l and "crypt" in l for l in crypt_check.stdout.splitlines()) if crypt_check.stdout else False
+
     print(f"=== Google Drive {mode} ===")
     print(f"Started:       {datetime.now().strftime('%Y-%m-%d %H:%M:%S %Z')}")
     print(f"Remote:        {remote_name}:{remote_root}/")
+    print(f"Encryption:    {'Yes (rclone crypt)' if encrypted else 'No'}")
     print(f"Sources:       {len(sources)}")
     print(f"Keep changed:  {keep_changed} versions")
     print(f"Keep deleted:  {keep_deleted} versions")
@@ -513,7 +518,7 @@ def main():
             overall_exit = 1
             continue
 
-        remote_base = f"{remote_root}/{folder}"
+        remote_base = f"{remote_root}/{folder}" if remote_root else folder
         exclude_args = build_exclude_args(global_excludes, source_excludes)
 
         # Log directory lives inside the source being backed up

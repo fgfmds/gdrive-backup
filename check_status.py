@@ -76,7 +76,26 @@ def config_info():
     schedule = cfg.get("schedule", {}).get("cron", "(not set)")
     excludes = cfg.get("exclude", {}).get("patterns", [])
 
-    print(f"  Remote:      {remote.get('name', '?')}:{remote.get('root', '?')}/")
+    remote_name = remote.get('name', '?')
+    remote_root = remote.get('root', '?')
+
+    # Detect if configured remote is a crypt (encrypted) remote
+    encrypted = False
+    try:
+        r = subprocess.run(
+            ["rclone", "config", "show", remote_name],
+            capture_output=True, text=True
+        )
+        if r.returncode == 0:
+            for line in r.stdout.splitlines():
+                if line.strip().startswith("type") and "crypt" in line:
+                    encrypted = True
+                    break
+    except FileNotFoundError:
+        pass
+
+    print(f"  Remote:      {remote_name}:{remote_root}/")
+    print(f"  Encryption:  {'Yes (rclone crypt)' if encrypted else 'No'}")
     print(f"  Retention:   {versions.get('keep_changed', 5)} changed, {versions.get('keep_deleted', 10)} deleted")
     print(f"  Schedule:    {schedule}")
     print(f"  Excludes:    {len(excludes)} global patterns")
@@ -175,7 +194,23 @@ def rclone_info():
             ["rclone", "listremotes"], capture_output=True, text=True
         )
         remote_list = [r.strip() for r in remotes.stdout.strip().splitlines() if r.strip()]
-        print(f"  Remotes: {', '.join(remote_list) if remote_list else 'none configured'}")
+        if not remote_list:
+            print(f"  Remotes: none configured")
+        else:
+            print(f"  Remotes:")
+            for r in remote_list:
+                r_name = r.rstrip(":")
+                r_result = subprocess.run(
+                    ["rclone", "config", "show", r_name],
+                    capture_output=True, text=True
+                )
+                r_type = "unknown"
+                for line in r_result.stdout.splitlines():
+                    stripped = line.strip()
+                    if stripped.startswith("type"):
+                        r_type = stripped.split("=", 1)[1].strip()
+                        break
+                print(f"    {r} (type: {r_type})")
     except FileNotFoundError:
         print("  rclone not installed (run ./setup.sh)")
 

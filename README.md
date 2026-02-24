@@ -56,6 +56,71 @@ cp config.template.toml config.toml
 ./backup.sh
 ```
 
+## Encryption (Optional)
+
+All backups can be encrypted at rest using rclone's built-in crypt remote. File contents, names, and directory names are encrypted before upload.
+
+### How it works
+
+rclone crypt creates a transparent encryption layer:
+
+```
+local -> gdrive-crypt:backups/   (encrypts automatically)
+         └── wraps gdrive:       (the actual Google Drive remote)
+```
+
+All backup operations (sync, archive, prune, restore) work identically through the encrypted remote. No changes to your workflow.
+
+### Enable encryption
+
+1. Run setup with encryption:
+   ```bash
+   ./setup.sh
+   # Answer 'y' when asked about encryption
+   ```
+
+2. Update `config.toml`:
+   ```toml
+   [remote]
+   name = "gdrive-crypt"    # Use the encrypted remote
+   root = "backups"
+   ```
+
+3. Back up as usual:
+   ```bash
+   ./backup.sh --dry-run
+   ./backup.sh
+   ```
+
+### Important warnings
+
+- **Password loss = permanent data loss.** There is no recovery mechanism. Store your encryption password in a password manager or other secure location.
+- **Switching from unencrypted to encrypted** does not migrate existing data. Old unencrypted files remain on Drive and a fresh full upload occurs. Delete old unencrypted data manually after verifying encrypted backups work.
+- **Inspect encrypted files** using the crypt remote:
+  ```bash
+  rclone ls gdrive-crypt:backups/claude-projects/current/
+  ```
+  Looking at `gdrive:backups/` directly will show encrypted filenames.
+
+### Add encryption to an existing setup
+
+If you already have a working unencrypted backup:
+
+```bash
+# 1. Create the crypt remote manually
+rclone config create gdrive-crypt crypt remote=gdrive: \
+    filename_encryption=standard directory_name_encryption=true
+rclone config password gdrive-crypt password YOUR_PASSWORD
+
+# 2. Change name in config.toml from "gdrive" to "gdrive-crypt"
+
+# 3. Run a full backup (all files re-uploaded encrypted)
+./backup.sh
+
+# 4. After verifying, remove old unencrypted data
+rclone purge gdrive:backups/
+```
+
 ## Prerequisites
 
 - **Python 3.11+** (for TOML config parsing via `tomllib`)

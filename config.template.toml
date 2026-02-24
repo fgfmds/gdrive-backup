@@ -8,9 +8,12 @@
 
 [remote]
 # rclone remote name — must match what you created during setup
+# For encrypted backups:  name = "gdrive-crypt"   (run ./setup.sh and enable encryption)
+# For unencrypted backups: name = "gdrive"
 name = "gdrive"
 
 # Root folder on Google Drive where all backups are stored
+# This works the same whether using encrypted or unencrypted remotes
 root = "backups"
 
 [versions]

@@ -1,6 +1,6 @@
 # SESSION_STATE — gdrive-backup
 
-**Last Updated:** 2026-02-24T12:00:00Z
+**Last Updated:** 2026-02-24T12:30:00Z
 
 ---
 
@@ -22,6 +22,7 @@ All planned features are implemented and committed. No known bugs.
 | Dry-run preview mode | Done | `e997367` |
 | Configurable retention + auto-prune | Done | `cd56e9e` |
 | Global + per-source exclude patterns | Done | `1571e9d` |
+| Optional rclone crypt encryption | Done | (pending commit) |
 
 ---
 
@@ -31,6 +32,7 @@ All planned features are implemented and committed. No known bugs.
 - **Self-exclude:** `gdrive-backup/**`
 - **Schedule:** Daily at 2 AM
 - **Retention:** 5 changed, 10 deleted
+- **Encryption:** Not yet enabled (rclone crypt support available)
 
 ---
 
@@ -40,12 +42,14 @@ All planned features are implemented and committed. No known bugs.
 2. **Per-source log directories** — logs live inside each source's `logs/` folder, not centrally.
 3. **TOML config** — uses Python 3.11+ `tomllib` (no external dependencies).
 4. **Single Python file** — `_backup_impl.py` contains all logic; `backup.sh` is a thin wrapper.
+5. **Crypt wraps at root level** — `gdrive-crypt` wraps `gdrive:` (not `gdrive:backups/`), so `root = "backups"` stays unchanged in config. Zero changes needed to backup/restore logic.
 
 ---
 
 ## What's Next
 
 - [ ] Run first real backup (not just dry-run)
+- [ ] Enable encryption (`./setup.sh` -> enable crypt -> update config.toml)
 - [ ] Install cron job (`./backup.sh --cron-install`)
 - [ ] Add more source directories as needed
 - [ ] Consider: email/notification on backup failure
