@@ -6,6 +6,9 @@ configs/*.toml
 # Logs
 logs/
 
+# Encryption config exports (contain obscured passwords)
+crypt-config.json
+
 # Python
 __pycache__/
 *.pyc

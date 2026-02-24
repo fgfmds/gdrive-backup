@@ -1,6 +1,6 @@
 # SESSION_STATE — gdrive-backup
 
-**Last Updated:** 2026-02-24T12:45:00Z
+**Last Updated:** 2026-02-24T13:00:00Z
 
 ---
 
@@ -23,7 +23,7 @@ All planned features are implemented and committed. No known bugs.
 | Configurable retention + auto-prune | Done | `cd56e9e` |
 | Global + per-source exclude patterns | Done | `1571e9d` |
 | Optional rclone crypt encryption | Done | `9a4918f` |
-| Cross-machine crypt export/import | Done | (pending commit) |
+| Cross-machine crypt export/import | Done | `0d153e7` |
 
 ---
 
