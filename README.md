@@ -102,6 +102,25 @@ All backup operations (sync, archive, prune, restore) work identically through t
   ```
   Looking at `gdrive:backups/` directly will show encrypted filenames.
 
+### Share encryption across machines
+
+All machines must use the **same encryption password** to read each other's backups. Rather than retyping the password (risking typos), export the crypt config from one machine and import it on others:
+
+```bash
+# On Machine A (where encryption is already set up):
+./setup.sh --export-crypt crypt-config.json
+
+# Transfer the file to Machine B (scp, USB, etc.)
+
+# On Machine B (after running ./setup.sh for the base remote):
+./setup.sh --import-crypt crypt-config.json
+
+# Delete the config file after importing
+rm crypt-config.json
+```
+
+The exported file contains the obscured (not plaintext) password. Delete it after importing — do not commit it to git.
+
 ### Add encryption to an existing setup
 
 If you already have a working unencrypted backup:
@@ -329,11 +348,28 @@ crontab -l
 
 1. Clone the repo: `git clone https://github.com/fgfmds/gdrive-backup.git`
 2. Run setup: `./setup.sh` (installs rclone, authenticates with Google Drive)
-3. Create config: `cp config.template.toml config.toml` and edit with local paths
-4. Test: `./backup.sh --dry-run`
-5. Automate: `./backup.sh --cron-install`
+3. Import encryption (if using crypt): `./setup.sh --import-crypt crypt-config.json`
+4. Create config: `cp config.template.toml config.toml` and edit with local paths
+5. Test: `./backup.sh --dry-run`
+6. Automate: `./backup.sh --cron-install`
 
 Each machine has its own `config.toml` with its local paths. The `config.toml` file is gitignored so it won't conflict across machines.
+
+### Cross-machine encryption
+
+If Machine A already has encryption set up, export the config before deploying to Machine B:
+
+```bash
+# Machine A: export crypt config
+./setup.sh --export-crypt crypt-config.json
+# Transfer crypt-config.json to Machine B
+
+# Machine B: after step 2 (base remote created)
+./setup.sh --import-crypt crypt-config.json
+rm crypt-config.json
+```
+
+This ensures both machines use identical encryption keys. Data encrypted by Machine A can be decrypted by Machine B and vice versa.
 
 ## Troubleshooting
 

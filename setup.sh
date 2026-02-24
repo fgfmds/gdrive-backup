@@ -1,9 +1,12 @@
 #!/bin/bash
 # setup.sh — Install rclone and configure Google Drive remote
 # Run this once per machine before using backup.sh
+#
+# Usage:
+#   ./setup.sh [remote-name]          Normal setup (default remote: gdrive)
+#   ./setup.sh --export-crypt [file]  Export crypt config for another machine
+#   ./setup.sh --import-crypt <file>  Import crypt config from another machine
 set -euo pipefail
-
-REMOTE_NAME="${1:-gdrive}"
 
 # ── Helper: Offer optional encryption setup ──────────────────────────
 offer_crypt_setup() {
@@ -19,6 +22,10 @@ offer_crypt_setup() {
     echo "  WARNING: If you lose the encryption password, your backups"
     echo "           are PERMANENTLY UNRECOVERABLE. Store it safely"
     echo "           (password manager, printed copy, etc.)."
+    echo ""
+    echo "  TIP: If another machine already has encryption set up, use"
+    echo "       ./setup.sh --import-crypt <file> instead to ensure"
+    echo "       the same password is used."
     echo ""
 
     read -p "Enable encryption? [y/N] " enable_crypt
@@ -89,6 +96,9 @@ offer_crypt_setup() {
     echo ""
     if rclone lsd "${crypt_name}:" --max-depth 0 &>/dev/null; then
         echo "Encrypted remote '$crypt_name' is working."
+        echo ""
+        echo "  To copy this encryption config to another machine:"
+        echo "    ./setup.sh --export-crypt"
         CRYPT_CREATED="$crypt_name"
     else
         echo "Warning: Encrypted remote created but verification failed."
@@ -110,7 +120,186 @@ print_next_steps() {
     fi
 }
 
-# ── Main ─────────────────────────────────────────────────────────────
+# ── Export crypt config ──────────────────────────────────────────────
+do_export_crypt() {
+    local outfile="${1:-crypt-config.json}"
+    local remote_name="${REMOTE_NAME:-gdrive}"
+    local crypt_name="${remote_name}-crypt"
+
+    if ! command -v rclone &>/dev/null; then
+        echo "Error: rclone is not installed." >&2
+        exit 1
+    fi
+
+    if ! rclone listremotes 2>/dev/null | grep -q "^${crypt_name}:$"; then
+        echo "Error: Encrypted remote '$crypt_name' not found." >&2
+        echo "Set up encryption first: ./setup.sh" >&2
+        exit 1
+    fi
+
+    # Extract crypt remote config as JSON using rclone config dump + python3
+    python3 -c "
+import json, subprocess, sys
+
+dump = subprocess.run(['rclone', 'config', 'dump'], capture_output=True, text=True)
+if dump.returncode != 0:
+    print('Error: rclone config dump failed', file=sys.stderr)
+    sys.exit(1)
+
+all_remotes = json.loads(dump.stdout)
+crypt_name = '${crypt_name}'
+
+if crypt_name not in all_remotes:
+    print(f'Error: {crypt_name} not found in rclone config', file=sys.stderr)
+    sys.exit(1)
+
+export = {crypt_name: all_remotes[crypt_name]}
+
+with open('${outfile}', 'w') as f:
+    json.dump(export, f, indent=2)
+    f.write('\n')
+
+print(f'Exported: {crypt_name}')
+"
+
+    echo ""
+    echo "Crypt config saved to: $outfile"
+    echo ""
+    echo "Transfer this file to the other machine, then run:"
+    echo "  ./setup.sh --import-crypt $outfile"
+    echo ""
+    echo "  SECURITY: This file contains your obscured encryption password."
+    echo "  Delete it after importing. Do not commit it to git."
+}
+
+# ── Import crypt config ──────────────────────────────────────────────
+do_import_crypt() {
+    local infile="${1:-}"
+
+    if [[ -z "$infile" ]]; then
+        echo "Error: No input file specified." >&2
+        echo "Usage: ./setup.sh --import-crypt <file>" >&2
+        exit 1
+    fi
+
+    if [[ ! -f "$infile" ]]; then
+        echo "Error: File not found: $infile" >&2
+        exit 1
+    fi
+
+    if ! command -v rclone &>/dev/null; then
+        echo "Error: rclone is not installed. Run ./setup.sh first." >&2
+        exit 1
+    fi
+
+    # Import the crypt remote config using python3 + rclone config create
+    python3 -c "
+import json, subprocess, sys
+
+with open('${infile}') as f:
+    data = json.load(f)
+
+if not data:
+    print('Error: Empty config file', file=sys.stderr)
+    sys.exit(1)
+
+for crypt_name, cfg in data.items():
+    if cfg.get('type') != 'crypt':
+        print(f'Error: {crypt_name} is not a crypt remote (type={cfg.get(\"type\")})', file=sys.stderr)
+        sys.exit(1)
+
+    # Check that the base remote exists
+    base_remote = cfg.get('remote', '').rstrip(':').rstrip('/')
+    if not base_remote:
+        print(f'Error: No base remote found in config', file=sys.stderr)
+        sys.exit(1)
+
+    result = subprocess.run(['rclone', 'listremotes'], capture_output=True, text=True)
+    remotes = result.stdout.strip().split('\n') if result.stdout.strip() else []
+    if f'{base_remote}:' not in remotes:
+        print(f'Error: Base remote \"{base_remote}\" not found on this machine.', file=sys.stderr)
+        print(f'Run ./setup.sh first to create the Google Drive remote.', file=sys.stderr)
+        sys.exit(1)
+
+    # Check if crypt remote already exists
+    if f'{crypt_name}:' in remotes:
+        print(f'Encrypted remote \"{crypt_name}\" already exists on this machine.')
+        print(f'To replace it, first run: rclone config delete {crypt_name}')
+        sys.exit(1)
+
+    # Build rclone config create arguments
+    # Pass all config fields (including obscured passwords) directly
+    args = ['rclone', 'config', 'create', crypt_name, 'crypt']
+    for key, value in cfg.items():
+        if key == 'type':
+            continue
+        args.append(f'{key}={value}')
+    # Passwords are already obscured, tell rclone not to re-obscure
+    args.append('--obscure=false')
+
+    result = subprocess.run(args, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f'Error creating remote: {result.stderr.strip()}', file=sys.stderr)
+        sys.exit(1)
+
+    print(f'Imported: {crypt_name}')
+
+    # Verify
+    result = subprocess.run(['rclone', 'lsd', f'{crypt_name}:', '--max-depth', '0'],
+                            capture_output=True, text=True)
+    if result.returncode == 0:
+        print(f'Verified: {crypt_name} is working.')
+    else:
+        print(f'Warning: Import succeeded but verification failed.')
+        print(f'Check: rclone config show {crypt_name}')
+"
+
+    echo ""
+    echo "You can now delete the config file: rm $infile"
+    echo ""
+    echo "Set name = \"$(python3 -c "import json; d=json.load(open('${infile}')); print(list(d.keys())[0])")\" in config.toml"
+}
+
+# ── Parse arguments ──────────────────────────────────────────────────
+
+REMOTE_NAME="gdrive"
+ACTION="setup"
+ACTION_ARG=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --export-crypt)
+            ACTION="export"
+            ACTION_ARG="${2:-}"
+            [[ -n "${2:-}" ]] && shift
+            shift
+            ;;
+        --import-crypt)
+            ACTION="import"
+            ACTION_ARG="${2:-}"
+            [[ -n "${2:-}" ]] && shift
+            shift
+            ;;
+        *)
+            REMOTE_NAME="$1"
+            shift
+            ;;
+    esac
+done
+
+# ── Handle export/import commands ────────────────────────────────────
+
+if [[ "$ACTION" == "export" ]]; then
+    do_export_crypt "$ACTION_ARG"
+    exit 0
+fi
+
+if [[ "$ACTION" == "import" ]]; then
+    do_import_crypt "$ACTION_ARG"
+    exit 0
+fi
+
+# ── Main setup flow ──────────────────────────────────────────────────
 
 CRYPT_CREATED=""
 

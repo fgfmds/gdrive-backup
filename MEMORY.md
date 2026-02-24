@@ -5,7 +5,7 @@
 # gdrive-backup — Project Memory
 
 ## Overview
-Google Drive backup tool using rclone. Syncs local directory trees to Drive with versioned archiving of changed/deleted files. Optional client-side encryption via rclone crypt.
+Google Drive backup tool using rclone. Syncs local directory trees to Drive with versioned archiving of changed/deleted files. Optional client-side encryption via rclone crypt with cross-machine export/import.
 
 ## Architecture
 - **Single Python file**: `_backup_impl.py` (all logic)
@@ -21,7 +21,7 @@ Google Drive backup tool using rclone. Syncs local directory trees to Drive with
 | `backup.sh` | Entry point — checks rclone + python, forwards to impl |
 | `config.toml` | Machine-specific config (gitignored) |
 | `config.template.toml` | Template for new machines |
-| `setup.sh` | One-time rclone install + OAuth + optional crypt setup |
+| `setup.sh` | One-time rclone install + OAuth + optional crypt setup + export/import |
 | `check_status.py` | Session-start status overview |
 | `SESSION_STATE.md` | Current project state + decisions |
 
@@ -30,6 +30,8 @@ Google Drive backup tool using rclone. Syncs local directory trees to Drive with
 - Config just changes `name = "gdrive-crypt"` — `root` stays the same
 - All backup/restore/archive/prune logic is unchanged (crypt is transparent)
 - `setup.sh` offers optional crypt setup after base remote verification
+- `setup.sh --export-crypt [file]` / `--import-crypt <file>` for cross-machine setup
+- Export uses `rclone config dump` (JSON, obscured passwords) — portable across machines
 - Password loss = permanent data loss (prominently warned)
 
 ## Current Config (ffarhat workstation)
@@ -41,7 +43,7 @@ Google Drive backup tool using rclone. Syncs local directory trees to Drive with
 ## Git
 - Remote: `https://github.com/fgfmds/gdrive-backup.git`
 - Branch: `master`
-- 6 commits as of 2026-02-24
+- 7 commits as of 2026-02-24
 
 ## Status
-Feature-complete (including encryption support). Next steps: first real backup, enable crypt, cron install.
+Feature-complete (including encryption + cross-machine export/import). Next steps: first real backup, enable crypt, cron install.
